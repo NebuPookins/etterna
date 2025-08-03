@@ -1505,6 +1505,11 @@ ScreenGameplay::Input(const InputEventPlus& input) -> bool
 						if (!ignoreInput) {
 							g_buttonsByColumnPressed[iCol].emplace(
 							  input.DeviceI.button);
+							
+							// Log every gameplay input for debugging
+							Locator::getLogger()->trace("ScreenGameplay: Processing input - col: {}, button: {}, release: {}, device: {}", 
+								iCol, input.DeviceI.button, bRelease, input.DeviceI.device);
+							
 							m_vPlayerInfo.m_pPlayer->Step(
 							  iCol, -1, input.DeviceI.ts, false, bRelease);
 						}

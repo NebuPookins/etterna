@@ -1881,6 +1881,12 @@ Player::Step(int col,
 			 bool bRelease,
 			 float padStickSeconds)
 {
+	// Log every arrow input for debugging
+	if (col != -1) {
+		Locator::getLogger()->trace("Player::Step: Arrow input - col: {}, row: {}, release: {}, time: {}", 
+			col, row, bRelease, std::chrono::duration_cast<std::chrono::milliseconds>(tm.time_since_epoch()).count());
+	}
+
 	const auto fMusicRate =
 		GAMESTATE->m_SongOptions.GetCurrent().m_fMusicRate;
 	const auto fHitUpdateDelta =
@@ -2074,6 +2080,10 @@ Player::Step(int col,
 		  NoteTypeToString(GetNoteType(iRowOfOverlappingNoteOrRow)));
 
 		const auto fSecondsFromExact = fabsf(fNoteOffset);
+
+		// Log when we find a note to score
+		Locator::getLogger()->trace("Player::Step: Found note to score - col: {}, row: {}, offset: {}, type: {}", 
+			col, iRowOfOverlappingNoteOrRow, fNoteOffset, pTN->type);
 
 		// We don't really have to care if we are releasing on a non-lift,
 		// right? This fixes a weird noteskin bug with tap explosions.
@@ -3059,6 +3069,10 @@ Player::SetJudgment(int iRow,
 					TapNoteScore tns,
 					float fTapNoteOffset)
 {
+	// Log every judgment for debugging
+	Locator::getLogger()->trace("Player::SetJudgment: Row: {}, Track: {}, Score: {}, Offset: {}", 
+		iRow, iTrack, tns, fTapNoteOffset);
+		
 	if (tns == TNS_Miss && m_pPlayerStageStats != nullptr) {
 		AddNoteToReplayData(
 		  GAMESTATE->CountNotesSeparately() ? iTrack : -1, &tn, iRow);

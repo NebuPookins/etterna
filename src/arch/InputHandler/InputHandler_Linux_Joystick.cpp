@@ -86,11 +86,13 @@ InputHandler_Linux_Joystick::TryDevice(std::string dev)
 	bool ret = false;
 	bool hotplug = false;
 	if (m_InputThread.IsCreated()) {
+		Locator::getLogger()->info("LinuxJoystick: Stopping thread for hotplug");
 		StopThread();
 		hotplug = true;
 	}
 	/* Thread is stopped! DO NOT RETURN */
 	{
+		Locator::getLogger()->info("LinuxJoystick: Attempting to open device {}", dev.c_str());
 		fds[m_iLastFd] = open(dev.c_str(), O_RDONLY);
 
 		if (fds[m_iLastFd] != -1) {
@@ -102,14 +104,15 @@ InputHandler_Linux_Joystick::TryDevice(std::string dev)
 			else
 				m_sDescription[m_iLastFd] = szName;
 
-			Locator::getLogger()->info("LinuxJoystick: Opened {}", dev.c_str());
+			Locator::getLogger()->info("LinuxJoystick: Successfully opened {} (fd: {})", dev.c_str(), fds[m_iLastFd]);
 			m_iLastFd++;
 			m_bDevicesChanged = true;
 			ret = true;
-		} else
+		} else {
 			Locator::getLogger()->warn("LinuxJoystick: Failed to open {}: {}",
 					  dev.c_str(),
 					  strerror(errno));
+		}
 	}
 	if (hotplug)
 		StartThread();
@@ -127,10 +130,16 @@ InputHandler_Linux_Joystick::InputThread_Start(void* p)
 void
 InputHandler_Linux_Joystick::InputThread()
 {
+	Locator::getLogger()->info("LinuxJoystick: Input thread started");
+	
+	// Heartbeat counter for periodic logging
+	int heartbeat_counter = 0;
+	
 	while (!m_bShutdown) {
 		fd_set fdset;
 		FD_ZERO(&fdset);
 		int max_fd = -1;
+		int active_devices = 0;
 
 		for (int i = 0; i < NUM_JOYSTICKS; ++i) {
 			if (fds[i] < 0)
@@ -138,14 +147,36 @@ InputHandler_Linux_Joystick::InputThread()
 
 			FD_SET(fds[i], &fdset);
 			max_fd = max(max_fd, fds[i]);
+			active_devices++;
 		}
 
-		if (max_fd == -1)
+		if (max_fd == -1) {
+			Locator::getLogger()->warn("LinuxJoystick: No active devices, breaking input loop");
 			break;
+		}
+
+		Locator::getLogger()->trace("LinuxJoystick: Waiting for input from {} devices", active_devices);
+
+		// Log heartbeat every 1000 iterations (roughly every 10 seconds)
+		heartbeat_counter++;
+		if (heartbeat_counter % 1000 == 0) {
+			Locator::getLogger()->info("LinuxJoystick: Input thread heartbeat - {} devices active", active_devices);
+		}
 
 		struct timeval zero = { 0, 100000 };
-		if (select(max_fd + 1, &fdset, NULL, NULL, &zero) <= 0)
-			continue;
+		int select_result = select(max_fd + 1, &fdset, NULL, NULL, &zero);
+		
+		if (select_result <= 0) {
+			if (select_result == 0) {
+				// Timeout - this is normal, continue
+				continue;
+			} else {
+				Locator::getLogger()->warn("LinuxJoystick: select() failed with errno {}", errno);
+				continue;
+			}
+		}
+
+		Locator::getLogger()->trace("LinuxJoystick: select() returned {}, processing events", select_result);
 		auto now = std::chrono::steady_clock::now();
 
 		for (int i = 0; i < NUM_JOYSTICKS; ++i) {
@@ -163,10 +194,15 @@ InputHandler_Linux_Joystick::InputThread()
 						  ret,
 						  (int)sizeof(event),
 						  i);
+				Locator::getLogger()->warn("LinuxJoystick: Closing device {} due to packet size error", i);
 				close(fds[i]);
 				fds[i] = -1;
 				continue;
 			}
+
+			// Log every joystick event for debugging
+			Locator::getLogger()->trace("LinuxJoystick: Device {} event - type: {}, number: {}, value: {}", 
+				i, event.type, event.number, event.value);
 
 			InputDevice id = InputDevice(DEVICE_JOY1 + i);
 
@@ -179,6 +215,10 @@ InputHandler_Linux_Joystick::InputThread()
 					// Correct for this.
 					wrap(iNum, 32); // max number of joystick buttons.  Make
 									// this a constant?
+					
+					Locator::getLogger()->trace("LinuxJoystick: Button press - device: {}, button: {}, value: {}", 
+						i, iNum, event.value);
+					
 					ButtonPressed(DeviceInput(
 					  id, enum_add2(JOY_BUTTON_1, iNum), event.value, now));
 					break;
@@ -188,6 +228,10 @@ InputHandler_Linux_Joystick::InputThread()
 					DeviceButton neg = enum_add2(JOY_LEFT, 2 * event.number);
 					DeviceButton pos = enum_add2(JOY_RIGHT, 2 * event.number);
 					float l = SCALE(int(event.value), 0.0f, 32767, 0.0f, 1.0f);
+					
+					Locator::getLogger()->trace("LinuxJoystick: Axis movement - device: {}, axis: {}, value: {}, scaled: {}", 
+						i, event.number, event.value, l);
+					
 					ButtonPressed(DeviceInput(id, neg, max(-l, 0.F), now));
 					ButtonPressed(DeviceInput(id, pos, max(+l, 0.F), now));
 					break;
@@ -198,6 +242,7 @@ InputHandler_Linux_Joystick::InputThread()
 					  "Unexpected packet (type {}) from joystick {}; disabled",
 					  event.type,
 					  i);
+					Locator::getLogger()->warn("LinuxJoystick: Closing device {} due to unexpected packet type", i);
 					close(fds[i]);
 					fds[i] = -1;
 					continue;
@@ -205,6 +250,7 @@ InputHandler_Linux_Joystick::InputThread()
 		}
 	}
 
+	Locator::getLogger()->info("LinuxJoystick: Input thread ending");
 	InputHandler::UpdateTimer();
 }
 
