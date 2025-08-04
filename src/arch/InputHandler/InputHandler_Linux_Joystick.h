@@ -22,10 +22,12 @@ class InputHandler_Linux_Joystick : public InputHandler
 	void StopThread();
 	static int InputThread_Start(void* p);
 	void InputThread();
+	bool ReinitializeDevice(int deviceIndex);
 
 	int fds[NUM_JOYSTICKS];
 	int m_iLastFd;
 	std::string m_sDescription[NUM_JOYSTICKS];
+	std::string m_sDevicePaths[NUM_JOYSTICKS]; // Store device paths for reinitialization
 	RageThread m_InputThread;
 	bool m_bShutdown, m_bDevicesChanged;
 };

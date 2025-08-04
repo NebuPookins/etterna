@@ -104,6 +104,9 @@ InputHandler_Linux_Joystick::TryDevice(std::string dev)
 			else
 				m_sDescription[m_iLastFd] = szName;
 
+			// Store the device path for potential reinitialization
+			m_sDevicePaths[m_iLastFd] = dev;
+
 			Locator::getLogger()->info("LinuxJoystick: Successfully opened {} (fd: {})", dev.c_str(), fds[m_iLastFd]);
 			m_iLastFd++;
 			m_bDevicesChanged = true;
@@ -125,6 +128,49 @@ InputHandler_Linux_Joystick::InputThread_Start(void* p)
 {
 	((InputHandler_Linux_Joystick*)p)->InputThread();
 	return 0;
+}
+
+bool
+InputHandler_Linux_Joystick::ReinitializeDevice(int deviceIndex)
+{
+	if (deviceIndex < 0 || deviceIndex >= NUM_JOYSTICKS) {
+		Locator::getLogger()->warn("LinuxJoystick: Invalid device index {} for reinitialization", deviceIndex);
+		return false;
+	}
+
+	if (m_sDevicePaths[deviceIndex].empty()) {
+		Locator::getLogger()->warn("LinuxJoystick: No device path stored for device {}", deviceIndex);
+		return false;
+	}
+
+	Locator::getLogger()->info("LinuxJoystick: Attempting to reinitialize device {} at path {}", 
+		deviceIndex, m_sDevicePaths[deviceIndex].c_str());
+
+	// Close the existing file descriptor if it's open
+	if (fds[deviceIndex] != -1) {
+		close(fds[deviceIndex]);
+		fds[deviceIndex] = -1;
+	}
+
+	// Try to reopen the device
+	fds[deviceIndex] = open(m_sDevicePaths[deviceIndex].c_str(), O_RDONLY);
+	if (fds[deviceIndex] == -1) {
+		Locator::getLogger()->warn("LinuxJoystick: Failed to reinitialize device {}: {}", 
+			deviceIndex, strerror(errno));
+		return false;
+	}
+
+	// Update the device description
+	char szName[1024];
+	ZERO(szName);
+	if (ioctl(fds[deviceIndex], JSIOCGNAME(sizeof(szName)), szName) < 0)
+		m_sDescription[deviceIndex] = ssprintf("Unknown joystick at %s", m_sDevicePaths[deviceIndex].c_str());
+	else
+		m_sDescription[deviceIndex] = szName;
+
+	Locator::getLogger()->info("LinuxJoystick: Successfully reinitialized device {} (fd: {})", 
+		deviceIndex, fds[deviceIndex]);
+	return true;
 }
 
 void
@@ -161,6 +207,16 @@ InputHandler_Linux_Joystick::InputThread()
 		heartbeat_counter++;
 		if (heartbeat_counter % 1000 == 0) {
 			Locator::getLogger()->info("LinuxJoystick: Input thread heartbeat - {} devices active", active_devices);
+			
+			// Periodically attempt to reinitialize any closed devices
+			for (int i = 0; i < NUM_JOYSTICKS; ++i) {
+				if (fds[i] == -1 && !m_sDevicePaths[i].empty()) {
+					Locator::getLogger()->info("LinuxJoystick: Attempting to reinitialize previously closed device {}", i);
+					if (ReinitializeDevice(i)) {
+						Locator::getLogger()->info("LinuxJoystick: Successfully reinitialized previously closed device {}", i);
+					}
+				}
+			}
 		}
 
 		struct timeval zero = { 0, 100000 };
@@ -190,14 +246,22 @@ InputHandler_Linux_Joystick::InputThread()
 			int ret = read(fds[i], &event, sizeof(event));
 			if (ret != sizeof(event)) {
 				Locator::getLogger()->warn("Unexpected packet (size {} != {}) from joystick {}; "
-						  "disabled",
+						  "attempting reinitialization",
 						  ret,
 						  (int)sizeof(event),
 						  i);
-				Locator::getLogger()->warn("LinuxJoystick: Closing device {} due to packet size error", i);
-				close(fds[i]);
-				fds[i] = -1;
-				continue;
+				Locator::getLogger()->warn("LinuxJoystick: Attempting to reinitialize device {} due to packet size error", i);
+				
+				// Attempt to reinitialize the device instead of just closing it
+				if (ReinitializeDevice(i)) {
+					Locator::getLogger()->info("LinuxJoystick: Successfully reinitialized device {}, continuing", i);
+					continue; // Skip processing this event since we just reinitialized
+				} else {
+					Locator::getLogger()->warn("LinuxJoystick: Failed to reinitialize device {}, closing it", i);
+					close(fds[i]);
+					fds[i] = -1;
+					continue;
+				}
 			}
 
 			// Log every joystick event for debugging
